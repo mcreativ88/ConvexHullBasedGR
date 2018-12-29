@@ -5,25 +5,43 @@
 using namespace cv;
 using namespace std;
 
-class Contour
+void reverseColumns(Mat& inOutFrame);
+Point getRectMid(const Rect& inRect);
+bool isInMergeBound(const Rect& inHost, const Rect& inTarget, int inCriticalDistance, int inMargin);
+Rect mergeRect(const Rect& inRect1, const Rect& inRect2);
+bool isPointInRect(const Rect& r, const Point& p, int margin = 0);
+
+class Convex
 {
 public:
-	Contour(const vector<Point>& contour);
+	Convex(const vector<Point>& contour);
 
-	vector<Point> contourPoints;
 	Point mid;
-	Rect boundary;
+
 
 private:
 };
 
-Contour::Contour(const vector<Point>& contour)
-	:contourPoints(contour)
+Convex::Convex(const vector<Point>& contour)
 {
 }
 
+class SegmentTracker
+{
+public:
+	
+	
 
-void reverseColumns(Mat& inOutFrame);
+private:
+	vector<Point> trail;
+	vector<Rect*> curTrackingSegments;
+	Rect trackinArea;
+
+	bool bActive;
+
+};
+
+
 
 int main(int, char**)
 {
@@ -46,6 +64,8 @@ int main(int, char**)
 	int SpoidY = 0.5f*vHeight;
 	Vec3f SampleColor(0, 0, 0);
 	
+	int sampleSegmentArea = SpoidRows*SpoidColumns;
+	int criticalDistance = sqrt(sampleSegmentArea);
 
 	// 샘플 yCrCb 색상 범위
 	uchar MinCr = 255;
@@ -63,7 +83,7 @@ int main(int, char**)
 	Mat input;
 	Mat workspace;
 	Mat result;
-	Mat handSpoid(SpoidRows, SpoidColumns, CV_8UC3);
+	Mat Spoid(SpoidRows, SpoidColumns, CV_8UC3);
 	Mat hsv;
 	Mat yCrCv;
 	Mat hsvBinary = Mat(vHeight, vWidth, CV_8U);
@@ -110,7 +130,7 @@ int main(int, char**)
 				{
 					auto& hsvColor = hsv.at<Vec3b>(SpoidY + row, SpoidX + col);
 					auto& yCrCvColor = yCrCv.at<Vec3b>(SpoidY + row, SpoidX + col);
-					handSpoid.at<Vec3b>(row, col) = yCrCvColor;
+					Spoid.at<Vec3b>(row, col) = yCrCvColor;
 
 					MinCr = MIN(MinCr, yCrCvColor[1]);
 					MinCb = MIN(MinCb, yCrCvColor[2]);
@@ -127,8 +147,8 @@ int main(int, char**)
 
 		// hsv 마스크 생성
 		{
-			float margin = 15;
-			inRange(hsv, Scalar(MinH, MinS - 5, 0), Scalar(MaxH, MaxS + margin, 255), hsvBinary);
+			float margin = 1;
+			inRange(hsv, Scalar(MinH, MinS - margin, 0), Scalar(MaxH, MaxS + margin, 255), hsvBinary);
 
 			blur(hsvBinary, hsvBinary, Size(15, 15));
 			threshold(hsvBinary, hsvBinary, 130, 255, THRESH_BINARY);
@@ -142,6 +162,7 @@ int main(int, char**)
 			inRange(yCrCv, Scalar(0, MinCr - margin, MinCb - margin), Scalar(255, MaxCr + margin, MaxCb + margin), yCrCvBinary);
 
 			blur(yCrCvBinary, yCrCvBinary, Size(10, 10));
+			threshold(yCrCvBinary, yCrCvBinary, 130, 255, THRESH_BINARY);
 		}
 
 		// hsv * yCrCv
@@ -163,6 +184,7 @@ int main(int, char**)
 		}
 
 		// 컨벡스 헐 추출
+		vector<Rect> segments;
 		{
 			vector<vector<Point>> contours;
 			vector<Rect> candidates;
@@ -186,26 +208,79 @@ int main(int, char**)
 				candidates.push_back(Rect2f(min, max));
 			}
 
-			for (size_t c_i = 0; c_i < candidates.size(); c_i++)
+			if (candidates.size() > 0)
 			{
-				Rect SpoidRect = Rect(SpoidX, SpoidY, SpoidColumns, SpoidRows);
-				if (candidates[c_i].area() < SpoidRect.area())
+				// 스포이드 크기보다 작은건 제거
+				for (size_t c_i = 0; c_i < candidates.size(); c_i++)
 				{
-					candidates.erase(candidates.begin() + c_i);
-					c_i--;
+					Rect SpoidRect = Rect(SpoidX, SpoidY, SpoidColumns, SpoidRows);
+					if (candidates[c_i].area() < SpoidRect.area())
+					{
+						candidates.erase(candidates.begin() + c_i);
+						c_i--;
+					}
 				}
-			}
 
-			for (size_t c_i = 0; c_i < candidates.size(); c_i++)
-			{
-				rectangle(result, candidates[c_i], Scalar(0, 255, 0), 2);
+				// 타겟 세그먼트 크기 저장
+				if (bCaptureSampleColor)
+				{
+					for (size_t c_i = 0; c_i < candidates.size(); c_i++)
+					{
+						auto& candidate = candidates[c_i];
+
+						if (isPointInRect(candidate, Point(SpoidX, SpoidY)))
+						{
+							sampleSegmentArea = candidate.area();
+							criticalDistance = sqrt(sampleSegmentArea);
+							break;
+						}
+					}
+				}
+
+				// 병합 
+				float mergingMargin = MAX(SpoidRows, SpoidColumns);
+				segments.push_back(candidates[0]);
+				for (size_t c_i = 1; c_i < candidates.size(); c_i++)
+				{
+					auto& candidate = candidates[c_i];
+
+					bool bMerged = false;
+					for (size_t c_j = 0; c_j < segments.size(); c_j++)
+					{
+						auto& segment = segments[c_j];
+
+						if (isInMergeBound(segment, candidate, criticalDistance, MAX(SpoidRows, SpoidColumns)))
+						{
+							segment = mergeRect(segment, candidate);
+							bMerged = true;
+							break;
+						}
+					}
+
+					if (!bMerged)
+					{
+						segments.push_back(candidate);
+					}
+				}
+
+
+				for (size_t c_i = 0; c_i < segments.size(); c_i++)
+				{
+					rectangle(result, segments[c_i], Scalar(0, 255, 0), 2);
+				}
+
+				cout << segments.size() << endl;
 			}
 		}
 
+
+
 		imshow("result", result);
+		imshow("hsv", hsvBinary);
+		imshow("yCrCv", yCrCvBinary);
 		imshow("combinedBinary", combinedBinary);
 		
-		int key = waitKey(16);
+		int key = waitKey(10);
 
 		switch (key)
 		{
@@ -293,4 +368,74 @@ void reverseColumns(Mat& inOutFrame)
 		right.copyTo(left);
 		temp.copyTo(right);
 	}
+}
+
+Point getRectMid(const Rect& inRect)
+{
+	Point mid;
+	mid.x = inRect.x + 0.5f*inRect.width;
+	mid.y = inRect.y + 0.5f*inRect.height;
+
+	return mid;
+}
+
+bool isInMergeBound(const Rect& inHost, const Rect& inTarget, int inCriticalDistance, int inMargin)
+{
+	int hostArea = inHost.area();
+	int targetArea = inTarget.area();
+
+	Point hostMid = getRectMid(inHost);
+	Point targetMid = getRectMid(inTarget);
+
+	bool bInBound = false;
+	
+	// 포함
+	if (hostArea >= targetArea)
+	{
+		Point targetP0(inTarget.x, inTarget.y);
+		Point targetP1(inTarget.x + inTarget.width, inTarget.y);
+		Point targetP2(inTarget.x + inTarget.width, inTarget.y + inTarget.height);
+		Point targetP3(inTarget.x, inTarget.y + inTarget.height);
+
+		bInBound = isPointInRect(inHost, targetP0, inMargin) || isPointInRect(inHost, targetP1, inMargin) || isPointInRect(inHost, targetP2, inMargin) || isPointInRect(inHost, targetP3, inMargin);
+	}
+	else
+	{
+		Point hostP0(inHost.x, inHost.y);
+		Point hostP1(inHost.x + inHost.width, inHost.y);
+		Point hostP2(inHost.x + inHost.width, inHost.y + inHost.height);
+		Point hostP3(inHost.x, inHost.y + inHost.height);
+
+		bInBound = isPointInRect(inTarget, hostP0, inMargin) || isPointInRect(inTarget, hostP1, inMargin) || isPointInRect(inTarget, hostP2, inMargin) || isPointInRect(inTarget, hostP3, inMargin);
+	}
+
+	// 최소거리 이내
+	if (norm(targetMid - hostMid) <= inCriticalDistance)
+	{
+		bInBound = true;
+	}
+
+	return bInBound;
+}
+
+Rect mergeRect(const Rect& inRect1, const Rect& inRect2)
+{
+	Point newMid = 0.5f*getRectMid(inRect1) + 0.5f*getRectMid(inRect2);
+	
+	int x = MIN(inRect1.x, inRect2.x);
+	int y = MIN(inRect1.y, inRect2.y);
+	int outerX = MAX(inRect1.x + inRect1.width, inRect2.x + inRect2.width);
+	int outerY = MAX(inRect1.y + inRect1.height, inRect2.y + inRect2.height);
+	int width = outerX - x;
+	int height = outerY - y;
+	Rect mergedRect(x, y, width, height);
+
+	return mergedRect;
+}
+
+bool isPointInRect(const Rect& r, const Point& p, int margin)
+{
+	return
+		p.x >= r.x - margin && p.x <= r.x + r.width + margin &&
+		p.y >= r.y - margin && p.y <= r.y + r.height + margin;
 }
