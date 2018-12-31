@@ -5,43 +5,152 @@
 using namespace cv;
 using namespace std;
 
+#define TARGET_FPS			60
+#define FIXED_DT			(1000.0/TARGET_FPS)
+#define DEACTIVATION_FRAME	(0.4*TARGET_FPS)
+
 void reverseColumns(Mat& inOutFrame);
 Point getRectMid(const Rect& inRect);
-bool isInMergeBound(const Rect& inHost, const Rect& inTarget, int inCriticalDistance, int inMargin);
+bool isInMergeBound(const Rect& inHost, const Rect& inTarget, float inCriticalDistance, float inMargin);
 Rect mergeRect(const Rect& inRect1, const Rect& inRect2);
-bool isPointInRect(const Rect& r, const Point& p, int margin = 0);
+bool isPointInRect(const Rect& r, const Point& p, float margin = 0);
 
-class Convex
+class Segment
 {
 public:
-	Convex(const vector<Point>& contour);
+	Segment(const Rect& inRect);
 
+public:
+	Rect rect;
 	Point mid;
+	bool bTracked = false;
 
-
-private:
+	// 트래커 입장에서 움직이는 상태의 세그먼트를 마크
+	// history 보관용
+	bool bActive = false;
 };
 
-Convex::Convex(const vector<Point>& contour)
+Segment::Segment(const Rect& inRect)
+	:rect(inRect)
 {
+	mid = getRectMid(rect);
 }
 
 class SegmentTracker
 {
 public:
-	
-	
+	SegmentTracker(int n);
+		
+	void preupdate();
+	void addToHistory(Segment& inSegment);
+	Point getNLatestSegmentMid(int n);
+	Point getNLatestInactiveSegmentMid(int n);
 
-private:
-	vector<Point> trail;
-	vector<Rect*> curTrackingSegments;
-	Rect trackinArea;
+public:
+	int deactivateCounter = 0;
+	int numTrackingFrames = 0;
+	vector<Segment> history;
 
-	bool bActive;
+	bool bActive = false;
+	bool bTracking = false;
+	bool bUpdated = false;
 
+	Point avgMid;
+	Point avgInactiveSegmentMid;
 };
 
+SegmentTracker::SegmentTracker(int n)
+	:numTrackingFrames(n)
+{
 
+}
+
+void SegmentTracker::preupdate()
+{
+	avgMid = Point(0, 0);
+	avgInactiveSegmentMid = Point(0, 0);
+	int InactiveSegments = 0;
+
+	if (history.size() > 0)
+	{
+		for (size_t c_i = 0; c_i < history.size(); c_i++)
+		{
+			auto& segment = history[c_i];
+
+			avgMid = avgMid + segment.mid;
+
+			if (!segment.bActive)
+			{
+				InactiveSegments++;
+				avgInactiveSegmentMid = avgInactiveSegmentMid + segment.mid;
+			}
+		}
+
+		avgMid = (1.0f / (float)history.size())*avgMid;
+
+		if (InactiveSegments > 0)
+		{
+			avgInactiveSegmentMid = (1.0f / (float)InactiveSegments)*avgInactiveSegmentMid;
+		}
+	}
+}
+
+void SegmentTracker::addToHistory(Segment& inSegment)
+{
+	while (history.size() >= numTrackingFrames)
+	{
+		history.pop_back();
+	}
+
+	history.insert(history.begin(), inSegment);
+}
+
+Point SegmentTracker::getNLatestSegmentMid(int _n)
+{
+	int n = MIN(_n, history.size());
+
+	Point mid(0, 0);
+	if (n > 0)
+	{
+		for (size_t c_i = 0; c_i < n; c_i++)
+		{
+			auto& segment = history[c_i];
+
+			mid = mid + segment.mid;
+		}
+	}
+	mid = (1.0f / (float)n)*mid;
+
+	return mid;
+}
+
+Point SegmentTracker::getNLatestInactiveSegmentMid(int _n)
+{
+	int n = MIN(_n, history.size());
+	int count = 0;
+
+	Point mid(0, 0);
+	if (n > 0)
+	{
+		for (size_t c_i = 0; c_i < history.size(); c_i++)
+		{
+			auto& segment = history[c_i];
+			if (!segment.bActive)
+			{
+				mid = mid + segment.mid;
+				count++;
+			}
+
+			if (count == n)
+			{
+				break;
+			}
+		}
+	}
+	mid = (1.0f / (float)n)*mid;
+
+	return mid;
+}
 
 int main(int, char**)
 {
@@ -52,20 +161,21 @@ int main(int, char**)
 		return -1;
 	}
 
-	int vWidth = capture.get(CAP_PROP_FRAME_WIDTH);
-	int vHeight = capture.get(CAP_PROP_FRAME_HEIGHT);
-	cout << vWidth << ", " << vHeight << endl;
+	int vWidth = (int)capture.get(CAP_PROP_FRAME_WIDTH);
+	int vHeight = (int)capture.get(CAP_PROP_FRAME_HEIGHT);
 
 	// 샘플 색상 추출
 	bool bCaptureSampleColor = false;
-	int SpoidColumns = 0.05f*vWidth;
-	int SpoidRows = 0.05f*vWidth;
-	int SpoidX = 0.75f*vWidth;
-	int SpoidY = 0.5f*vHeight;
+	const int MIN_SPOID_WIDTH = (int)(0.05f*vWidth);
+	const int MIN_SPOID_HEIGHT = (int)(0.05f*vWidth);
+	int SpoidColumns = MIN_SPOID_WIDTH;
+	int SpoidRows = MIN_SPOID_HEIGHT;
+	int SpoidX = (int)(0.75f*vWidth);
+	int SpoidY = (int)(0.5f*vHeight);
 	Vec3f SampleColor(0, 0, 0);
 	
-	int sampleSegmentArea = SpoidRows*SpoidColumns;
-	int criticalDistance = sqrt(sampleSegmentArea);
+	float sampleSegmentArea = SpoidRows*SpoidColumns;
+	float criticalDistance = (float)sqrt(sampleSegmentArea);
 
 	// 샘플 yCrCb 색상 범위
 	uchar MinCr = 255;
@@ -90,6 +200,10 @@ int main(int, char**)
 	Mat yCrCvBinary = Mat(vHeight, vWidth, CV_8U);
 	Mat combinedBinary = Mat(vHeight, vWidth, CV_8U);
 	
+	// 세그먼트 트래커
+	int numTrackingFrame = 120;
+	vector<SegmentTracker> segmentTrackers;
+
 	while (capture.read(input))
 	{
 		if (input.empty())
@@ -145,16 +259,16 @@ int main(int, char**)
 			}
 		}
 
-		// hsv 마스크 생성
-		{
-			float margin = 1;
-			inRange(hsv, Scalar(MinH, MinS - margin, 0), Scalar(MaxH, MaxS + margin, 255), hsvBinary);
+		//// hsv 마스크 생성
+		//{
+		//	float margin = 14;
+		//	inRange(hsv, Scalar(MinH, MinS - 0.2f*margin, 0), Scalar(MaxH, MaxS + margin, 255), hsvBinary);
 
-			blur(hsvBinary, hsvBinary, Size(15, 15));
-			threshold(hsvBinary, hsvBinary, 130, 255, THRESH_BINARY);
-			blur(hsvBinary, hsvBinary, Size(10, 10));
-			threshold(hsvBinary, hsvBinary, 150, 255, THRESH_BINARY);
-		}
+		//	blur(hsvBinary, hsvBinary, Size(15, 15));
+		//	threshold(hsvBinary, hsvBinary, 130, 255, THRESH_BINARY);
+		//	blur(hsvBinary, hsvBinary, Size(10, 10));
+		//	threshold(hsvBinary, hsvBinary, 150, 255, THRESH_BINARY);
+		//}
 
 		// yCrCv 마스크 생성
 		{
@@ -165,31 +279,32 @@ int main(int, char**)
 			threshold(yCrCvBinary, yCrCvBinary, 130, 255, THRESH_BINARY);
 		}
 
-		// hsv * yCrCv
-		{
-			for (int row = 0; row < yCrCv.rows; row++)
-			{
-				for (int col = 0; col < yCrCv.cols; col++)
-				{
-					auto& h = hsvBinary.at<uchar>(row, col);
-					auto& y = yCrCvBinary.at<uchar>(row, col);
-					auto& c = combinedBinary.at<uchar>(row, col);
+		//// hsv * yCrCv
+		//{
+		//	for (int row = 0; row < yCrCv.rows; row++)
+		//	{
+		//		for (int col = 0; col < yCrCv.cols; col++)
+		//		{
+		//			auto& h = hsvBinary.at<uchar>(row, col);
+		//			auto& y = yCrCvBinary.at<uchar>(row, col);
+		//			auto& c = combinedBinary.at<uchar>(row, col);
 
-					c = MIN(h * y, 255);
-				}
-			}
+		//			c = MIN(h * y, 255);
+		//		}
+		//	}
 
-			blur(combinedBinary, combinedBinary, Size(15, 15));
-			threshold(combinedBinary, combinedBinary, 130, 255, THRESH_BINARY);
-		}
+		//	blur(combinedBinary, combinedBinary, Size(15, 15));
+		//	threshold(combinedBinary, combinedBinary, 130, 255, THRESH_BINARY);
+		//}
 
 		// 컨벡스 헐 추출
-		vector<Rect> segments;
+		vector<Segment> segments;
 		{
 			vector<vector<Point>> contours;
 			vector<Rect> candidates;
 
-			findContours(combinedBinary, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
+			//findContours(combinedBinary, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
+			findContours(yCrCvBinary, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
 			for (size_t c_i = 0; c_i < contours.size(); c_i++)
 			{
 				vector<Point> hullPoints;
@@ -230,28 +345,33 @@ int main(int, char**)
 
 						if (isPointInRect(candidate, Point(SpoidX, SpoidY)))
 						{
-							sampleSegmentArea = candidate.area();
-							criticalDistance = sqrt(sampleSegmentArea);
+							sampleSegmentArea = (float)candidate.area();
+							criticalDistance = (float)sqrt(sampleSegmentArea);
 							break;
 						}
 					}
 				}
 
 				// 병합 
-				float mergingMargin = MAX(SpoidRows, SpoidColumns);
-				segments.push_back(candidates[0]);
-				for (size_t c_i = 1; c_i < candidates.size(); c_i++)
+				int mergingMargin = MAX(SpoidRows, SpoidColumns);
+				for (size_t c_i = 0; c_i < candidates.size(); c_i++)
 				{
 					auto& candidate = candidates[c_i];
+
+					if (segments.size() == 0)
+					{
+						segments.push_back(Segment(candidates[0]));
+						continue;
+					}
 
 					bool bMerged = false;
 					for (size_t c_j = 0; c_j < segments.size(); c_j++)
 					{
 						auto& segment = segments[c_j];
 
-						if (isInMergeBound(segment, candidate, criticalDistance, MAX(SpoidRows, SpoidColumns)))
+						if (isInMergeBound(segment.rect, candidate, 0.8f*criticalDistance, (float)MAX(SpoidRows, SpoidColumns)))
 						{
-							segment = mergeRect(segment, candidate);
+							segment.rect = mergeRect(segment.rect, candidate);
 							bMerged = true;
 							break;
 						}
@@ -259,29 +379,231 @@ int main(int, char**)
 
 					if (!bMerged)
 					{
-						segments.push_back(candidate);
+						segments.push_back(Segment(candidate));
 					}
 				}
-
-
-				for (size_t c_i = 0; c_i < segments.size(); c_i++)
-				{
-					rectangle(result, segments[c_i], Scalar(0, 255, 0), 2);
-				}
-
-				cout << segments.size() << endl;
+				
+				//for (size_t c_i = 0; c_i < segments.size(); c_i++)
+				//{
+				//	rectangle(result, segments[c_i].rect, Scalar(0, 255, 0), 2);
+				//}
+				//cout << segments.size() << endl;
 			}
 		}
 
+		// 트래커 업데이트 //
 
+		// 트래커 추가
+		while (segmentTrackers.size() < segments.size())
+		{
+			segmentTrackers.push_back(SegmentTracker(120));
+		}
+
+		// 업데이트 준비
+		for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
+		{
+			auto& tracker = segmentTrackers[c_i];
+			tracker.preupdate();
+			tracker.bUpdated = false;
+		}
+
+		// 업데이트
+		if (segmentTrackers.size() > 0)
+		{
+			// 활성화 상태 트래커 업데이트
+			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
+			{
+				auto& tracker = segmentTrackers[c_i];
+
+				// 다음 세그먼트 추적
+				if (!tracker.bUpdated && tracker.bTracking && tracker.bActive)
+				{
+					auto prevSegment = tracker.history.front();
+
+					// 가장 가까운 세그먼트를 추적
+					float minDistance = MAX(vWidth, vHeight);
+					int minIndex = -1;
+					for (size_t c_j = 0; c_j < segments.size(); c_j++)
+					{
+						auto& segment = segments[c_j];
+						if (!segment.bTracked && isPointInRect(prevSegment.rect, getRectMid(segment.rect), 0.3f*(float)sqrt(prevSegment.rect.area())))
+						{
+							float distance = (float)norm(segment.mid - prevSegment.mid);
+							if (minDistance > distance)
+							{
+								minDistance = distance;
+								minIndex = c_j;
+							}
+						}
+					}
+
+					if (minIndex >= 0)
+					{
+						auto& nearestSegment = segments[minIndex];
+			
+						// 일정 거리 이내일 경우 비활성화 상태로 변경
+						float threshold = 0.1f*(float)sqrt(prevSegment.rect.area());
+						if (minDistance <= threshold)
+						{
+							if (++tracker.deactivateCounter > DEACTIVATION_FRAME)
+							{
+								tracker.bActive = false;
+								tracker.history.clear();
+								tracker.deactivateCounter = 0;
+							}
+						}
+						else
+						{
+							tracker.deactivateCounter = 0;
+							nearestSegment.bActive = true;
+						}
+
+						// 히스토리엔 위치를 보간 후 보관
+						auto copy = nearestSegment;
+						copy.mid = 0.6f*copy.mid + 0.4f*prevSegment.mid;
+
+						tracker.addToHistory(copy);
+						tracker.bUpdated = true;
+						nearestSegment.bTracked = true;
+					}
+				}
+
+			}
+
+			// 비활성화 상태 트래커 업데이트
+			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
+			{
+				auto& tracker = segmentTrackers[c_i];
+				
+				// 다음 세그먼트 추적
+				if (tracker.bTracking && !tracker.bActive)
+				{
+					auto prevSegment = tracker.history.front();
+
+					// 가장 가까운 세그먼트를 추적
+					float minDistance = (float)MAX(vWidth, vHeight);
+					int minIndex = -1;
+					for (size_t c_j = 0; c_j < segments.size(); c_j++)
+					{
+						auto& segment = segments[c_j];
+						if (!segment.bTracked && isPointInRect(prevSegment.rect, getRectMid(segment.rect), 0.3f*(float)sqrt(prevSegment.rect.area())))
+						{
+							float distance = (float)norm(segment.mid - tracker.getNLatestSegmentMid(10));
+							if (minDistance > distance)
+							{
+								minDistance = distance;
+								minIndex = c_j;
+							}
+						}
+					}
+
+					if (minIndex >= 0)
+					{
+						auto& nearestSegment = segments[minIndex];
+
+						// 일정 거리 이내일 경우 계속 비활성화 상태로 간주
+						float threshold = 0.3f*(float)sqrt(prevSegment.rect.area());
+						if (minDistance <= threshold)
+						{
+							//tracker.history.clear();
+						}
+
+						// 일정 거리를 벗어나면 활성화 상태로 변경
+						else
+						{
+							tracker.history.clear();
+							tracker.bActive = true;
+							nearestSegment.bActive = true;
+						}
+
+						// 히스토리엔 위치를 보간 후 보관
+						auto copy = nearestSegment;
+						copy.mid = 0.6f*copy.mid + 0.4f*prevSegment.mid;
+
+						tracker.addToHistory(nearestSegment);
+						tracker.bUpdated = true;
+						nearestSegment.bTracked = true;
+					}
+				}
+			}
+
+			// 트래커에 세그먼트 할당
+			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
+			{
+				auto& tracker = segmentTrackers[c_i];
+	
+				if(!tracker.bUpdated && !tracker.bTracking)
+				{
+					for (size_t c_j = 0; c_j < segments.size(); c_j++)
+					{
+						auto& segment = segments[c_j];
+						if (!segment.bTracked)
+						{
+							tracker.addToHistory(segment);
+							tracker.bTracking = true;
+							tracker.bUpdated = true;
+							segment.bTracked = true;
+							break;
+						}
+					}
+				}
+			}
+
+			// 잉여 트래커 삭제
+			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
+			{
+				auto& tracker = segmentTrackers[c_i];
+
+				if (!tracker.bUpdated)
+				{
+					cout << "tracker: " << c_i <<  " not updated" << endl;
+
+					segmentTrackers.erase(segmentTrackers.begin() + c_i);
+					c_i--;
+				}
+			}
+		}
+
+		// 시각화
+		{
+			// 디버그
+			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
+			{
+				auto& segmentTracker = segmentTrackers[c_i];
+				if (segmentTracker.bTracking)
+				{
+					Rect& segmentArea = segmentTracker.history.front().rect;
+					if (segmentTracker.bActive)
+					{
+						rectangle(result, segmentArea, Scalar(50, 255, 50), 5);
+
+						for (size_t c_i = segmentTracker.history.size() - 1; c_i > 0; c_i--)
+						{
+							auto& segment = segmentTracker.history[c_i];
+							auto& nextSegment = segmentTracker.history[c_i - 1];
+
+							Point mid = segment.mid;
+							Point nextMid = nextSegment.mid;
+
+							line(result, mid, nextMid, Scalar(255, 0, 255), 5);
+						}
+					}
+					else
+					{
+						rectangle(result, segmentArea, Scalar(255, 0, 0), 2);
+					}
+				}
+			}
+
+
+		}
 
 		imshow("result", result);
-		imshow("hsv", hsvBinary);
+		//imshow("hsv", hsvBinary);
 		imshow("yCrCv", yCrCvBinary);
-		imshow("combinedBinary", combinedBinary);
+		//imshow("combinedBinary", combinedBinary);
 		
-		int key = waitKey(10);
-
+		int key = waitKey(FIXED_DT);
 		switch (key)
 		{
 		case 27:
@@ -321,7 +643,7 @@ int main(int, char**)
 		case 'q':
 			if (bCaptureSampleColor)
 			{
-				SpoidColumns = MAX(SpoidColumns - 10, 0.05f*vWidth);
+				SpoidColumns = MAX(SpoidColumns - 10, MIN_SPOID_WIDTH);
 			}
 			break;
 		case 'e':
@@ -333,7 +655,7 @@ int main(int, char**)
 		case 'z':
 			if (bCaptureSampleColor)
 			{
-				SpoidRows = MAX(SpoidRows - 10, 0.05f*vWidth);
+				SpoidRows = MAX(SpoidRows - 10, MIN_SPOID_HEIGHT);
 			}
 			break;
 		case 'c':
@@ -373,13 +695,13 @@ void reverseColumns(Mat& inOutFrame)
 Point getRectMid(const Rect& inRect)
 {
 	Point mid;
-	mid.x = inRect.x + 0.5f*inRect.width;
-	mid.y = inRect.y + 0.5f*inRect.height;
+	mid.x = inRect.x + (int)(0.5f*inRect.width);
+	mid.y = inRect.y + (int)(0.5f*inRect.height);
 
 	return mid;
 }
 
-bool isInMergeBound(const Rect& inHost, const Rect& inTarget, int inCriticalDistance, int inMargin)
+bool isInMergeBound(const Rect& inHost, const Rect& inTarget, float inCriticalDistance, float inMargin)
 {
 	int hostArea = inHost.area();
 	int targetArea = inTarget.area();
@@ -433,7 +755,7 @@ Rect mergeRect(const Rect& inRect1, const Rect& inRect2)
 	return mergedRect;
 }
 
-bool isPointInRect(const Rect& r, const Point& p, int margin)
+bool isPointInRect(const Rect& r, const Point& p, float margin)
 {
 	return
 		p.x >= r.x - margin && p.x <= r.x + r.width + margin &&
