@@ -145,11 +145,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="ColorSampler.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Segment.cpp" />
     <ClCompile Include="SegmentTracker.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ColorSampler.h" />
     <ClInclude Include="Segment.h" />
     <ClInclude Include="SegmentTracker.h" />
   </ItemGroup>

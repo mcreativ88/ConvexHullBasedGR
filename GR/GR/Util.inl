@@ -57,7 +57,7 @@ inline bool isPointInRect(const Rect& r, const Point& p, float margin = 0)
 }
 
 
-inline bool isInMergeBound(const Rect& inHost, const Rect& inTarget, float inCriticalDistance, float inMargin = 0)
+inline bool isInMergeBound(const Rect& inHost, const Rect& inTarget, float inMinDistance, float inMargin = 0)
 {
 	int hostArea = inHost.area();
 	int targetArea = inTarget.area();
@@ -67,7 +67,7 @@ inline bool isInMergeBound(const Rect& inHost, const Rect& inTarget, float inCri
 
 	bool bInBound = false;
 
-	// ∆˜«‘
+	// Ìè¨Ìï®
 	if (hostArea >= targetArea)
 	{
 		Point targetP0(inTarget.x, inTarget.y);
@@ -87,8 +87,8 @@ inline bool isInMergeBound(const Rect& inHost, const Rect& inTarget, float inCri
 		bInBound = isPointInRect(inTarget, hostP0, inMargin) || isPointInRect(inTarget, hostP1, inMargin) || isPointInRect(inTarget, hostP2, inMargin) || isPointInRect(inTarget, hostP3, inMargin);
 	}
 
-	// √÷º“∞≈∏Æ ¿Ã≥ª
-	if (norm(targetMid - hostMid) <= inCriticalDistance)
+	// ÏµúÏÜåÍ±∞Î¶¨ Ïù¥ÎÇ¥
+	if (norm(targetMid - hostMid) <= inMinDistance)
 	{
 		bInBound = true;
 	}

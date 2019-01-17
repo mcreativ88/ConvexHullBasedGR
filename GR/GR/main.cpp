@@ -2,14 +2,16 @@
 #include <iostream>
 #include <stdio.h>
 #include "Util.inl"
+#include "ColorSampler.h"
 #include "SegmentTracker.h"
 
 using namespace cv;
 using namespace std;
 
 #define TARGET_FPS			60
-#define FIXED_DT			(1000.0/TARGET_FPS)
-#define DEACTIVATION_FRAME	(0.4*TARGET_FPS)
+#define FIXED_DT			((int)(1000.0/TARGET_FPS))
+#define DEACTIVATION_FRAME	((int)(0.4*TARGET_FPS))
+#define NUM_TRACKING_FRAME	120
 
 int main(int, char**)
 {
@@ -20,48 +22,43 @@ int main(int, char**)
 		return -1;
 	}
 
+	// 화면 크기
 	int vWidth = (int)capture.get(CAP_PROP_FRAME_WIDTH);
 	int vHeight = (int)capture.get(CAP_PROP_FRAME_HEIGHT);
 
-	// 샘플 색상 추출
+	// 색상 추출기
 	bool bCaptureSampleColor = false;
-	const int MIN_SPOID_WIDTH = (int)(0.05f*vWidth);
-	const int MIN_SPOID_HEIGHT = (int)(0.05f*vWidth);
-	int SpoidColumns = MIN_SPOID_WIDTH;
-	int SpoidRows = MIN_SPOID_HEIGHT;
-	int SpoidX = (int)(0.75f*vWidth);
-	int SpoidY = (int)(0.5f*vHeight);
-	Vec3f SampleColor(0, 0, 0);
-	
-	float sampleSegmentArea = SpoidRows*SpoidColumns;
-	float criticalDistance = (float)sqrt(sampleSegmentArea);
+	ColorSampler spoid;
+	{
+		int minSpoidWidth = (int)(0.05f*vWidth);
+		int x = (int)(0.75f*vWidth);
+		int y = (int)(0.5f*vHeight);
+		int columns = minSpoidWidth;
+		int rows = minSpoidWidth;
 
-	// 샘플 yCrCb 색상 범위
-	uchar MinCr = 255;
-	uchar MaxCr = 0;
-	uchar MinCb = 255;
-	uchar MaxCb = 0;
+		spoid = ColorSampler(Rect(x, y, columns, rows), minSpoidWidth);
+	}
 
-	// 샘플 hsv 색상 범위
-	uchar MinH = 255;
-	uchar MaxH = 0;
-	uchar MinS = 255;
-	uchar MaxS = 0;
+	// 샘플 영역 색상 범위
+	Vec3b minYcc(0, 0, 0);
+	Vec3b maxYcc(0, 0, 0);
+	Vec3b minHsv(0, 0, 0);
+	Vec3b maxHsv(0, 0, 0);
 
-	// 컨벡스
+	// 세그먼트 병합 최소 거리
+	float minMergeDistance = 0;
+
+	// 세그먼트 트래커
+	vector<SegmentTracker> segmentTrackers;
+
+	// 매트릭스
 	Mat input;
-	Mat workspace;
 	Mat result;
-	Mat Spoid(SpoidRows, SpoidColumns, CV_8UC3);
 	Mat hsv;
 	Mat yCrCv;
 	Mat hsvBinary = Mat(vHeight, vWidth, CV_8U);
 	Mat yCrCvBinary = Mat(vHeight, vWidth, CV_8U);
 	Mat combinedBinary = Mat(vHeight, vWidth, CV_8U);
-	
-	// 세그먼트 트래커
-	int numTrackingFrame = 120;
-	vector<SegmentTracker> segmentTrackers;
 
 	while (capture.read(input))
 	{
@@ -71,58 +68,36 @@ int main(int, char**)
 			break;
 		}
 
+		// 화면 좌우 반전
 		reverseColumns(input);
 
-		input.copyTo(workspace);
 		input.copyTo(result);
 
 		// 색상 변환
-		cvtColor(workspace, hsv, COLOR_BGR2HSV);
-		cvtColor(workspace, yCrCv, COLOR_BGR2YCrCb);
+		cvtColor(input, hsv, COLOR_BGR2HSV);
+		cvtColor(input, yCrCv, COLOR_BGR2YCrCb);
 
 		// 샘플 색상 추출
 		if (bCaptureSampleColor)
 		{
-			Rect SpoidRect = Rect(SpoidX, SpoidY, SpoidColumns, SpoidRows);
-			rectangle(result, SpoidRect, Scalar(0, 0, 255), 2);
+			Rect spoidRect = spoid.GetSampleRect();
+			rectangle(result, spoidRect, Scalar(0, 0, 255), 2);
 
-			MinCr = 255;
-			MaxCr = 0;
-			MinCb = 255;
-			MaxCb = 0;
+			spoid.examineColor(hsv);
+			maxHsv = spoid.GetUpperBoundColor();
+			minHsv = spoid.GetLowerBoundColor();
 
-			MinH = 255;
-			MaxH = 0;
-			MinS = 255;
-			MaxS = 0;
-
-			SampleColor.zeros();
-			for (int row = 0; row < SpoidRows; row++)
-			{
-				for (int col = 0; col < SpoidColumns; col++)
-				{
-					auto& hsvColor = hsv.at<Vec3b>(SpoidY + row, SpoidX + col);
-					auto& yCrCvColor = yCrCv.at<Vec3b>(SpoidY + row, SpoidX + col);
-					Spoid.at<Vec3b>(row, col) = yCrCvColor;
-
-					MinCr = MIN(MinCr, yCrCvColor[1]);
-					MinCb = MIN(MinCb, yCrCvColor[2]);
-					MaxCr = MAX(MaxCr, yCrCvColor[1]);
-					MaxCb = MAX(MaxCb, yCrCvColor[2]);
-
-					MinH = MIN(MinH, hsvColor[0]);
-					MinS = MIN(MinS, hsvColor[1]);
-					MaxH = MAX(MaxH, hsvColor[0]);
-					MaxS = MAX(MaxS, hsvColor[1]);
-				}
-			}
+			spoid.examineColor(yCrCv);
+			maxYcc = spoid.GetUpperBoundColor();
+			minYcc = spoid.GetLowerBoundColor();
 		}
 
 		// hsv 마스크 생성
 		{
 			float margin = 14;
-			inRange(hsv, Scalar(MinH, MinS - 0.2f*margin, 0), Scalar(MaxH, MaxS + margin, 255), hsvBinary);
+			inRange(hsv, Scalar(minHsv[0], minHsv[1] - 0.2f*margin, 0), Scalar(maxHsv[0], maxHsv[1] + margin, 255), hsvBinary);
 
+			// 블러 처리
 			blur(hsvBinary, hsvBinary, Size(15, 15));
 			threshold(hsvBinary, hsvBinary, 130, 255, THRESH_BINARY);
 			blur(hsvBinary, hsvBinary, Size(10, 10));
@@ -132,8 +107,9 @@ int main(int, char**)
 		// yCrCv 마스크 생성
 		{
 			float margin = 3;
-			inRange(yCrCv, Scalar(0, MinCr - margin, MinCb - margin), Scalar(255, MaxCr + margin, MaxCb + margin), yCrCvBinary);
-
+			inRange(yCrCv, Scalar(0, minYcc[1] - margin, minYcc[2] - margin), Scalar(255, maxYcc[1] + margin, maxYcc[2] + margin), yCrCvBinary);
+			 
+			// 블러 처리
 			blur(yCrCvBinary, yCrCvBinary, Size(10, 10));
 			threshold(yCrCvBinary, yCrCvBinary, 130, 255, THRESH_BINARY);
 		}
@@ -189,7 +165,7 @@ int main(int, char**)
 				// 스포이드 크기보다 작은건 제거
 				for (size_t c_i = 0; c_i < candidates.size(); c_i++)
 				{
-					Rect SpoidRect = Rect(SpoidX, SpoidY, SpoidColumns, SpoidRows);
+					Rect SpoidRect = spoid.GetSampleRect();
 					if (candidates[c_i].area() < SpoidRect.area())
 					{
 						candidates.erase(candidates.begin() + c_i);
@@ -203,18 +179,16 @@ int main(int, char**)
 					for (size_t c_i = 0; c_i < candidates.size(); c_i++)
 					{
 						auto& candidate = candidates[c_i];
-
-						if (isPointInRect(candidate, Point(SpoidX, SpoidY)))
+						if (isPointInRect(candidate, getRectMid(spoid.GetSampleRect())))
 						{
-							sampleSegmentArea = (float)candidate.area();
-							criticalDistance = (float)sqrt(sampleSegmentArea);
+							float sampleSegmentArea = (float)candidate.area();
+							minMergeDistance = (float)sqrt(sampleSegmentArea);
 							break;
 						}
 					}
 				}
 
 				// 병합 
-				int mergingMargin = MAX(SpoidRows, SpoidColumns);
 				for (size_t c_i = 0; c_i < candidates.size(); c_i++)
 				{
 					auto& candidate = candidates[c_i];
@@ -230,7 +204,7 @@ int main(int, char**)
 					{
 						auto& segment = segments[c_j];
 
-						if (isInMergeBound(segment.rect, candidate, 0.8f*criticalDistance, (float)MAX(SpoidRows, SpoidColumns)))
+						if (isInMergeBound(segment.rect, candidate, 0.8f*minMergeDistance, 0))
 						{
 							segment.rect = mergeRect(segment.rect, candidate);
 							bMerged = true;
@@ -251,7 +225,7 @@ int main(int, char**)
 		// 트래커 추가
 		while (segmentTrackers.size() < segments.size())
 		{
-			segmentTrackers.push_back(SegmentTracker(120));
+			segmentTrackers.push_back(SegmentTracker(NUM_TRACKING_FRAME));
 		}
 
 		// 업데이트 준비
@@ -276,7 +250,7 @@ int main(int, char**)
 					auto prevSegment = tracker.history.front();
 
 					// 가장 가까운 세그먼트를 추적
-					float minDistance = MAX(vWidth, vHeight);
+					float minDistance = (float)MAX(vWidth, vHeight);
 					int minIndex = -1;
 					for (size_t c_j = 0; c_j < segments.size(); c_j++)
 					{
@@ -287,7 +261,7 @@ int main(int, char**)
 							if (minDistance > distance)
 							{
 								minDistance = distance;
-								minIndex = c_j;
+								minIndex = (int)c_j;
 							}
 						}
 					}
@@ -347,7 +321,7 @@ int main(int, char**)
 							if (minDistance > distance)
 							{
 								minDistance = distance;
-								minIndex = c_j;
+								minIndex = (int)c_j;
 							}
 						}
 					}
@@ -421,7 +395,6 @@ int main(int, char**)
 
 		// 시각화
 		{
-			// 디버그
 			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
 			{
 				auto& segmentTracker = segmentTrackers[c_i];
@@ -470,25 +443,25 @@ int main(int, char**)
 		case 'a':
 			if (bCaptureSampleColor)
 			{
-				SpoidX -= 10;
+				spoid.moveBy(-10, 0);
 			}
 			break;
 		case 'd':
 			if (bCaptureSampleColor)
 			{
-				SpoidX += 10;
+				spoid.moveBy(10, 0);
 			}
 			break;
 		case 'w':
 			if (bCaptureSampleColor)
 			{
-				SpoidY -= 10;
+				spoid.moveBy(0, -10);
 			}
 			break;
 		case 's':
 			if (bCaptureSampleColor)
 			{
-				SpoidY += 10;
+				spoid.moveBy(0, 10);
 			}
 			break;
 
@@ -496,28 +469,27 @@ int main(int, char**)
 		case 'q':
 			if (bCaptureSampleColor)
 			{
-				SpoidColumns = MAX(SpoidColumns - 10, MIN_SPOID_WIDTH);
+				spoid.resizeBy(-10, 0);
 			}
 			break;
 		case 'e':
 			if (bCaptureSampleColor)
 			{
-				SpoidColumns += 10;
+				spoid.resizeBy(10, 0);
 			}
 			break;
 		case 'z':
 			if (bCaptureSampleColor)
 			{
-				SpoidRows = MAX(SpoidRows - 10, MIN_SPOID_HEIGHT);
+				spoid.resizeBy(0, -10);
 			}
 			break;
 		case 'c':
 			if (bCaptureSampleColor)
 			{
-				SpoidRows += 10;
+				spoid.resizeBy(0, 10);
 			}
 			break;
-
 		}
 	}
 

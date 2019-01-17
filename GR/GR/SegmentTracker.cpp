@@ -1,4 +1,3 @@
-
 #include "SegmentTracker.h"
 
 SegmentTracker::SegmentTracker(int n)
@@ -49,7 +48,7 @@ void SegmentTracker::addToHistory(Segment& inSegment)
 
 Point SegmentTracker::getNLatestSegmentMid(int _n)
 {
-	int n = MIN(_n, history.size());
+	int n = MIN(_n, (int)history.size());
 
 	Point mid(0, 0);
 	if (n > 0)
@@ -68,7 +67,7 @@ Point SegmentTracker::getNLatestSegmentMid(int _n)
 
 Point SegmentTracker::getNLatestInactiveSegmentMid(int _n)
 {
-	int n = MIN(_n, history.size());
+	int n = MIN(_n, (int)history.size());
 	int count = 0;
 
 	Point mid(0, 0);

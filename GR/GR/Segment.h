@@ -1,4 +1,3 @@
-
 #pragma once
 #include <opencv2/opencv.hpp>
 
@@ -10,15 +9,15 @@ public:
 	Segment(const Rect& inRect);
 
 public:
-	// ¼¼±×¸ÕÆ® ¿µ¿ª
+	// ì„¸ê·¸ë¨¼íŠ¸ ì˜ì—­
 	Rect rect;
 
-	// ¼¼±×¸ÕÆ® Áß½É
+	// ì„¸ê·¸ë¨¼íŠ¸ ì¤‘ì‹¬
 	Point mid;
 
-	// Æ®·¡Å· ¸¶Ä¿
+	// íŠ¸ë˜í‚¹ ë§ˆì»¤
 	bool bTracked = false;
 
-	// ÇöÀç À¯È¿ÇÑ Á¦½ºÃÄ¿¡ Æ÷ÇÔµÈ ¼¼±×¸ÕÆ® ¸¶Å·
+	// í˜„ì¬ ìœ íš¨í•œ ì œìŠ¤ì³ì— í¬í•¨ëœ ì„¸ê·¸ë¨¼íŠ¸ ë§ˆí‚¹
 	bool bActive = false;
 };
