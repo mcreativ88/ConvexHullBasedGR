@@ -34,6 +34,8 @@ void SegmentTracker::preupdate()
 			avgInactiveSegmentMid = (1.0f / (float)InactiveSegments)*avgInactiveSegmentMid;
 		}
 	}
+
+	bUpdated = false;
 }
 
 void SegmentTracker::addToHistory(Segment& inSegment)

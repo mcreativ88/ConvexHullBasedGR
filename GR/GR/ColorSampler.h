@@ -50,11 +50,13 @@ public:
 		return lowerBoundColor;
 	}
 
+public:
+	bool bCaptureColor = false;
+
 private:
 	Rect samplingRect;
 	Vec3b averageColor;
 	Vec3b upperBoundColor;
 	Vec3b lowerBoundColor;
-
 	int minWidth = 0;
 };

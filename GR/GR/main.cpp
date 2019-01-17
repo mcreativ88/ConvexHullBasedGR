@@ -13,6 +13,8 @@ using namespace std;
 #define DEACTIVATION_FRAME	((int)(0.4*TARGET_FPS))
 #define NUM_TRACKING_FRAME	120
 
+void extractSegments(vector<Segment>& outSegments, const Mat& inMat, const ColorSampler& inSpoid);
+
 int main(int, char**)
 {
 	VideoCapture capture(0);
@@ -27,7 +29,6 @@ int main(int, char**)
 	int vHeight = (int)capture.get(CAP_PROP_FRAME_HEIGHT);
 
 	// 색상 추출기
-	bool bCaptureSampleColor = false;
 	ColorSampler spoid;
 	{
 		int minSpoidWidth = (int)(0.05f*vWidth);
@@ -78,7 +79,7 @@ int main(int, char**)
 		cvtColor(input, yCrCv, COLOR_BGR2YCrCb);
 
 		// 샘플 색상 추출
-		if (bCaptureSampleColor)
+		if (spoid.bCaptureColor)
 		{
 			Rect spoidRect = spoid.GetSampleRect();
 			rectangle(result, spoidRect, Scalar(0, 0, 255), 2);
@@ -132,96 +133,11 @@ int main(int, char**)
 			threshold(combinedBinary, combinedBinary, 130, 255, THRESH_BINARY);
 		}
 
-		// 컨벡스 헐 추출
+		// 세그먼트 추출
 		vector<Segment> segments;
-		{
-			vector<vector<Point>> contours;
-			vector<Rect> candidates;
-
-			findContours(combinedBinary, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
-			//findContours(yCrCvBinary, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
-			//findContours(hsvBinary, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
-
-			for (size_t c_i = 0; c_i < contours.size(); c_i++)
-			{
-				vector<Point> hullPoints;
-				convexHull(contours[c_i], hullPoints, true);
-
-				Point min(vWidth, vHeight);
-				Point max(0, 0);
-				for (size_t p_i = 0; p_i < hullPoints.size(); p_i++)
-				{
-					min.x = MIN(min.x, hullPoints[p_i].x);
-					min.y = MIN(min.y, hullPoints[p_i].y);
-					max.x = MAX(max.x, hullPoints[p_i].x);
-					max.y = MAX(max.y, hullPoints[p_i].y);
-				}
-
-				candidates.push_back(Rect2f(min, max));
-			}
-
-			if (candidates.size() > 0)
-			{
-				// 스포이드 크기보다 작은건 제거
-				for (size_t c_i = 0; c_i < candidates.size(); c_i++)
-				{
-					Rect SpoidRect = spoid.GetSampleRect();
-					if (candidates[c_i].area() < SpoidRect.area())
-					{
-						candidates.erase(candidates.begin() + c_i);
-						c_i--;
-					}
-				}
-
-				// 타겟 세그먼트 크기 저장
-				if (bCaptureSampleColor)
-				{
-					for (size_t c_i = 0; c_i < candidates.size(); c_i++)
-					{
-						auto& candidate = candidates[c_i];
-						if (isPointInRect(candidate, getRectMid(spoid.GetSampleRect())))
-						{
-							float sampleSegmentArea = (float)candidate.area();
-							minMergeDistance = (float)sqrt(sampleSegmentArea);
-							break;
-						}
-					}
-				}
-
-				// 병합 
-				for (size_t c_i = 0; c_i < candidates.size(); c_i++)
-				{
-					auto& candidate = candidates[c_i];
-
-					if (segments.size() == 0)
-					{
-						segments.push_back(Segment(candidates[0]));
-						continue;
-					}
-
-					bool bMerged = false;
-					for (size_t c_j = 0; c_j < segments.size(); c_j++)
-					{
-						auto& segment = segments[c_j];
-
-						if (isInMergeBound(segment.rect, candidate, 0.8f*minMergeDistance, 0))
-						{
-							segment.rect = mergeRect(segment.rect, candidate);
-							bMerged = true;
-							break;
-						}
-					}
-
-					if (!bMerged)
-					{
-						segments.push_back(Segment(candidate));
-					}
-				}
-			}
-		}
+		extractSegments(segments, combinedBinary, spoid);
 
 		// 트래커 업데이트 //
-
 		// 트래커 추가
 		while (segmentTrackers.size() < segments.size())
 		{
@@ -233,11 +149,9 @@ int main(int, char**)
 		{
 			auto& tracker = segmentTrackers[c_i];
 			tracker.preupdate();
-			tracker.bUpdated = false;
 		}
 
 		// 업데이트
-		if (segmentTrackers.size() > 0)
 		{
 			// 활성화 상태 트래커 업데이트
 			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
@@ -434,64 +348,116 @@ int main(int, char**)
 		{
 		case 27:
 			return 0;
-
-		case '1': // hand spoid
-			bCaptureSampleColor = !bCaptureSampleColor;
+		case '1':
+			spoid.bCaptureColor = !spoid.bCaptureColor;
 			break;
+		}
 
-		// 위치 조절
-		case 'a':
-			if (bCaptureSampleColor)
+		if (spoid.bCaptureColor)
+		{
+			switch (key)
 			{
+			// 위치 이동
+			case 'a':
 				spoid.moveBy(-10, 0);
-			}
-			break;
-		case 'd':
-			if (bCaptureSampleColor)
-			{
+				break;
+			case 'd':
 				spoid.moveBy(10, 0);
-			}
-			break;
-		case 'w':
-			if (bCaptureSampleColor)
-			{
+				break;
+			case 'w':
 				spoid.moveBy(0, -10);
-			}
-			break;
-		case 's':
-			if (bCaptureSampleColor)
-			{
+				break;
+			case 's':
 				spoid.moveBy(0, 10);
-			}
-			break;
+				break;
 
-		// 크기조절
-		case 'q':
-			if (bCaptureSampleColor)
-			{
+			// 크기조절
+			case 'q':
 				spoid.resizeBy(-10, 0);
-			}
-			break;
-		case 'e':
-			if (bCaptureSampleColor)
-			{
+				break;
+			case 'e':
 				spoid.resizeBy(10, 0);
-			}
-			break;
-		case 'z':
-			if (bCaptureSampleColor)
-			{
+				break;
+			case 'z':
 				spoid.resizeBy(0, -10);
-			}
-			break;
-		case 'c':
-			if (bCaptureSampleColor)
-			{
+				break;
+			case 'c':
 				spoid.resizeBy(0, 10);
+				break;
 			}
-			break;
 		}
 	}
 
 	return 0;
+}
+
+void extractSegments(vector<Segment>& outSegments, const Mat& inMat, const ColorSampler& inSpoid)
+{
+	vector<vector<Point>> contours;
+	vector<Rect> candidates;
+
+	findContours(inMat, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
+
+	for (size_t c_i = 0; c_i < contours.size(); c_i++)
+	{
+		vector<Point> hullPoints;
+		convexHull(contours[c_i], hullPoints, true);
+
+		Point min(INT32_MAX, INT32_MAX);
+		Point max(0, 0);
+		for (size_t p_i = 0; p_i < hullPoints.size(); p_i++)
+		{
+			min.x = MIN(min.x, hullPoints[p_i].x);
+			min.y = MIN(min.y, hullPoints[p_i].y);
+			max.x = MAX(max.x, hullPoints[p_i].x);
+			max.y = MAX(max.y, hullPoints[p_i].y);
+		}
+
+		candidates.push_back(Rect2f(min, max));
+	}
+
+	if (candidates.size() > 0)
+	{
+		// 스포이드 크기 이하는 제거
+		for (size_t c_i = 0; c_i < candidates.size(); c_i++)
+		{
+			if (candidates[c_i].area() < inSpoid.GetSampleArea())
+			{
+				candidates.erase(candidates.begin() + c_i);
+				c_i--;
+			}
+		}
+
+		// 병합 
+		float mergingMinDst = sqrt(4.0f*inSpoid.GetSampleArea());
+		float mergingMargin = sqrt(1.5f*inSpoid.GetSampleArea());
+		for (size_t c_i = 0; c_i < candidates.size(); c_i++)
+		{
+			auto& candidate = candidates[c_i];
+
+			if (outSegments.size() == 0)
+			{
+				outSegments.push_back(Segment(candidates[0]));
+				continue;
+			}
+
+			bool bMerged = false;
+			for (size_t c_j = 0; c_j < outSegments.size(); c_j++)
+			{
+				auto& segment = outSegments[c_j];
+
+				if (isInMergeBound(segment.rect, candidate, mergingMinDst, mergingMargin))
+				{
+					segment.rect = mergeRect(segment.rect, candidate);
+					bMerged = true;
+					break;
+				}
+			}
+
+			if (!bMerged)
+			{
+				outSegments.push_back(Segment(candidate));
+			}
+		}
+	}
 }

@@ -5,6 +5,8 @@ ColorSampler::ColorSampler()
 	averageColor = Vec3b(0, 0, 0);
 	upperBoundColor = Vec3b(0, 0, 0);
 	lowerBoundColor = Vec3b(255, 255, 255);
+
+	bCaptureColor = false;
 }
 
 ColorSampler::ColorSampler(const Rect& inRect, int inMinWidth)
@@ -14,6 +16,8 @@ ColorSampler::ColorSampler(const Rect& inRect, int inMinWidth)
 	averageColor = Vec3b(0, 0, 0);
 	upperBoundColor = Vec3b(0, 0, 0);
 	lowerBoundColor = Vec3b(255, 255, 255);
+
+	bCaptureColor = false;
 }
 
 void ColorSampler::examineColor(const Mat& inMat)
