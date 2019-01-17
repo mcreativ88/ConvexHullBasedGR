@@ -146,6 +146,15 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Segment.cpp" />
+    <ClCompile Include="SegmentTracker.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Segment.h" />
+    <ClInclude Include="SegmentTracker.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Util.inl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

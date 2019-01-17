@@ -1,6 +1,8 @@
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <stdio.h>
+#include "Util.inl"
+#include "SegmentTracker.h"
 
 using namespace cv;
 using namespace std;
@@ -8,149 +10,6 @@ using namespace std;
 #define TARGET_FPS			60
 #define FIXED_DT			(1000.0/TARGET_FPS)
 #define DEACTIVATION_FRAME	(0.4*TARGET_FPS)
-
-void reverseColumns(Mat& inOutFrame);
-Point getRectMid(const Rect& inRect);
-bool isInMergeBound(const Rect& inHost, const Rect& inTarget, float inCriticalDistance, float inMargin);
-Rect mergeRect(const Rect& inRect1, const Rect& inRect2);
-bool isPointInRect(const Rect& r, const Point& p, float margin = 0);
-
-class Segment
-{
-public:
-	Segment(const Rect& inRect);
-
-public:
-	Rect rect;
-	Point mid;
-	bool bTracked = false;
-
-	// 트래커 입장에서 움직이는 상태의 세그먼트를 마크
-	// history 보관용
-	bool bActive = false;
-};
-
-Segment::Segment(const Rect& inRect)
-	:rect(inRect)
-{
-	mid = getRectMid(rect);
-}
-
-class SegmentTracker
-{
-public:
-	SegmentTracker(int n);
-		
-	void preupdate();
-	void addToHistory(Segment& inSegment);
-	Point getNLatestSegmentMid(int n);
-	Point getNLatestInactiveSegmentMid(int n);
-
-public:
-	int deactivateCounter = 0;
-	int numTrackingFrames = 0;
-	vector<Segment> history;
-
-	bool bActive = false;
-	bool bTracking = false;
-	bool bUpdated = false;
-
-	Point avgMid;
-	Point avgInactiveSegmentMid;
-};
-
-SegmentTracker::SegmentTracker(int n)
-	:numTrackingFrames(n)
-{
-
-}
-
-void SegmentTracker::preupdate()
-{
-	avgMid = Point(0, 0);
-	avgInactiveSegmentMid = Point(0, 0);
-	int InactiveSegments = 0;
-
-	if (history.size() > 0)
-	{
-		for (size_t c_i = 0; c_i < history.size(); c_i++)
-		{
-			auto& segment = history[c_i];
-
-			avgMid = avgMid + segment.mid;
-
-			if (!segment.bActive)
-			{
-				InactiveSegments++;
-				avgInactiveSegmentMid = avgInactiveSegmentMid + segment.mid;
-			}
-		}
-
-		avgMid = (1.0f / (float)history.size())*avgMid;
-
-		if (InactiveSegments > 0)
-		{
-			avgInactiveSegmentMid = (1.0f / (float)InactiveSegments)*avgInactiveSegmentMid;
-		}
-	}
-}
-
-void SegmentTracker::addToHistory(Segment& inSegment)
-{
-	while (history.size() >= numTrackingFrames)
-	{
-		history.pop_back();
-	}
-
-	history.insert(history.begin(), inSegment);
-}
-
-Point SegmentTracker::getNLatestSegmentMid(int _n)
-{
-	int n = MIN(_n, history.size());
-
-	Point mid(0, 0);
-	if (n > 0)
-	{
-		for (size_t c_i = 0; c_i < n; c_i++)
-		{
-			auto& segment = history[c_i];
-
-			mid = mid + segment.mid;
-		}
-	}
-	mid = (1.0f / (float)n)*mid;
-
-	return mid;
-}
-
-Point SegmentTracker::getNLatestInactiveSegmentMid(int _n)
-{
-	int n = MIN(_n, history.size());
-	int count = 0;
-
-	Point mid(0, 0);
-	if (n > 0)
-	{
-		for (size_t c_i = 0; c_i < history.size(); c_i++)
-		{
-			auto& segment = history[c_i];
-			if (!segment.bActive)
-			{
-				mid = mid + segment.mid;
-				count++;
-			}
-
-			if (count == n)
-			{
-				break;
-			}
-		}
-	}
-	mid = (1.0f / (float)n)*mid;
-
-	return mid;
-}
 
 int main(int, char**)
 {
@@ -259,16 +118,16 @@ int main(int, char**)
 			}
 		}
 
-		//// hsv 마스크 생성
-		//{
-		//	float margin = 14;
-		//	inRange(hsv, Scalar(MinH, MinS - 0.2f*margin, 0), Scalar(MaxH, MaxS + margin, 255), hsvBinary);
+		// hsv 마스크 생성
+		{
+			float margin = 14;
+			inRange(hsv, Scalar(MinH, MinS - 0.2f*margin, 0), Scalar(MaxH, MaxS + margin, 255), hsvBinary);
 
-		//	blur(hsvBinary, hsvBinary, Size(15, 15));
-		//	threshold(hsvBinary, hsvBinary, 130, 255, THRESH_BINARY);
-		//	blur(hsvBinary, hsvBinary, Size(10, 10));
-		//	threshold(hsvBinary, hsvBinary, 150, 255, THRESH_BINARY);
-		//}
+			blur(hsvBinary, hsvBinary, Size(15, 15));
+			threshold(hsvBinary, hsvBinary, 130, 255, THRESH_BINARY);
+			blur(hsvBinary, hsvBinary, Size(10, 10));
+			threshold(hsvBinary, hsvBinary, 150, 255, THRESH_BINARY);
+		}
 
 		// yCrCv 마스크 생성
 		{
@@ -279,23 +138,23 @@ int main(int, char**)
 			threshold(yCrCvBinary, yCrCvBinary, 130, 255, THRESH_BINARY);
 		}
 
-		//// hsv * yCrCv
-		//{
-		//	for (int row = 0; row < yCrCv.rows; row++)
-		//	{
-		//		for (int col = 0; col < yCrCv.cols; col++)
-		//		{
-		//			auto& h = hsvBinary.at<uchar>(row, col);
-		//			auto& y = yCrCvBinary.at<uchar>(row, col);
-		//			auto& c = combinedBinary.at<uchar>(row, col);
+		// hsv * yCrCv
+		{
+			for (int row = 0; row < yCrCv.rows; row++)
+			{
+				for (int col = 0; col < yCrCv.cols; col++)
+				{
+					auto& h = hsvBinary.at<uchar>(row, col);
+					auto& y = yCrCvBinary.at<uchar>(row, col);
+					auto& c = combinedBinary.at<uchar>(row, col);
 
-		//			c = MIN(h * y, 255);
-		//		}
-		//	}
+					c = MIN(h * y, 255);
+				}
+			}
 
-		//	blur(combinedBinary, combinedBinary, Size(15, 15));
-		//	threshold(combinedBinary, combinedBinary, 130, 255, THRESH_BINARY);
-		//}
+			blur(combinedBinary, combinedBinary, Size(15, 15));
+			threshold(combinedBinary, combinedBinary, 130, 255, THRESH_BINARY);
+		}
 
 		// 컨벡스 헐 추출
 		vector<Segment> segments;
@@ -303,8 +162,10 @@ int main(int, char**)
 			vector<vector<Point>> contours;
 			vector<Rect> candidates;
 
-			//findContours(combinedBinary, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
-			findContours(yCrCvBinary, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
+			findContours(combinedBinary, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
+			//findContours(yCrCvBinary, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
+			//findContours(hsvBinary, contours, RetrievalModes::RETR_EXTERNAL, ContourApproximationModes::CHAIN_APPROX_NONE);
+
 			for (size_t c_i = 0; c_i < contours.size(); c_i++)
 			{
 				vector<Point> hullPoints;
@@ -382,12 +243,6 @@ int main(int, char**)
 						segments.push_back(Segment(candidate));
 					}
 				}
-				
-				//for (size_t c_i = 0; c_i < segments.size(); c_i++)
-				//{
-				//	rectangle(result, segments[c_i].rect, Scalar(0, 255, 0), 2);
-				//}
-				//cout << segments.size() << endl;
 			}
 		}
 
@@ -594,14 +449,12 @@ int main(int, char**)
 					}
 				}
 			}
-
-
 		}
 
 		imshow("result", result);
 		//imshow("hsv", hsvBinary);
-		imshow("yCrCv", yCrCvBinary);
-		//imshow("combinedBinary", combinedBinary);
+		//imshow("yCrCv", yCrCvBinary);
+		imshow("combinedBinary", combinedBinary);
 		
 		int key = waitKey(FIXED_DT);
 		switch (key)
@@ -669,95 +522,4 @@ int main(int, char**)
 	}
 
 	return 0;
-}
-
-void reverseColumns(Mat& inOutFrame)
-{
-	for (int i = 0; i < inOutFrame.cols / 2.0f; i++)
-	{
-		int leftIndex = i;
-		int rightIndex = inOutFrame.cols - 1 - i;
-
-		if (leftIndex == rightIndex)
-		{
-			break;
-		}
-
-		Mat left = inOutFrame.col(leftIndex);
-		Mat right = inOutFrame.col(rightIndex);
-		Mat temp;
-		left.copyTo(temp);
-		right.copyTo(left);
-		temp.copyTo(right);
-	}
-}
-
-Point getRectMid(const Rect& inRect)
-{
-	Point mid;
-	mid.x = inRect.x + (int)(0.5f*inRect.width);
-	mid.y = inRect.y + (int)(0.5f*inRect.height);
-
-	return mid;
-}
-
-bool isInMergeBound(const Rect& inHost, const Rect& inTarget, float inCriticalDistance, float inMargin)
-{
-	int hostArea = inHost.area();
-	int targetArea = inTarget.area();
-
-	Point hostMid = getRectMid(inHost);
-	Point targetMid = getRectMid(inTarget);
-
-	bool bInBound = false;
-	
-	// 포함
-	if (hostArea >= targetArea)
-	{
-		Point targetP0(inTarget.x, inTarget.y);
-		Point targetP1(inTarget.x + inTarget.width, inTarget.y);
-		Point targetP2(inTarget.x + inTarget.width, inTarget.y + inTarget.height);
-		Point targetP3(inTarget.x, inTarget.y + inTarget.height);
-
-		bInBound = isPointInRect(inHost, targetP0, inMargin) || isPointInRect(inHost, targetP1, inMargin) || isPointInRect(inHost, targetP2, inMargin) || isPointInRect(inHost, targetP3, inMargin);
-	}
-	else
-	{
-		Point hostP0(inHost.x, inHost.y);
-		Point hostP1(inHost.x + inHost.width, inHost.y);
-		Point hostP2(inHost.x + inHost.width, inHost.y + inHost.height);
-		Point hostP3(inHost.x, inHost.y + inHost.height);
-
-		bInBound = isPointInRect(inTarget, hostP0, inMargin) || isPointInRect(inTarget, hostP1, inMargin) || isPointInRect(inTarget, hostP2, inMargin) || isPointInRect(inTarget, hostP3, inMargin);
-	}
-
-	// 최소거리 이내
-	if (norm(targetMid - hostMid) <= inCriticalDistance)
-	{
-		bInBound = true;
-	}
-
-	return bInBound;
-}
-
-Rect mergeRect(const Rect& inRect1, const Rect& inRect2)
-{
-	Point newMid = 0.5f*getRectMid(inRect1) + 0.5f*getRectMid(inRect2);
-	
-	int x = MIN(inRect1.x, inRect2.x);
-	int y = MIN(inRect1.y, inRect2.y);
-	int outerX = MAX(inRect1.x + inRect1.width, inRect2.x + inRect2.width);
-	int outerY = MAX(inRect1.y + inRect1.height, inRect2.y + inRect2.height);
-	int width = outerX - x;
-	int height = outerY - y;
-	Rect mergedRect(x, y, width, height);
-
-	return mergedRect;
-}
-
-bool isPointInRect(const Rect& r, const Point& p, float margin)
-{
-	return
-		p.x >= r.x - margin && p.x <= r.x + r.width + margin &&
-		p.y >= r.y - margin && p.y <= r.y + r.height + margin;
 }
