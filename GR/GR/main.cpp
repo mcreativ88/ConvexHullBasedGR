@@ -8,10 +8,10 @@
 using namespace cv;
 using namespace std;
 
-#define TARGET_FPS			60
-#define FIXED_DT			((int)(1000.0/TARGET_FPS))
-#define DEACTIVATION_FRAME	((int)(0.4*TARGET_FPS))
-#define NUM_TRACKING_FRAME	120
+#define TARGET_FPS				60
+#define FIXED_DT				((int)(1000.0/TARGET_FPS))
+#define NUM_DEACTIVATION_FRAMES	((int)(0.4*TARGET_FPS))
+#define NUM_TRACKING_FRAMES		120
 
 void extractSegments(vector<Segment>& outSegments, const Mat& inMat, const ColorSampler& inSpoid);
 
@@ -51,6 +51,7 @@ int main(int, char**)
 
 	// 세그먼트 트래커
 	vector<SegmentTracker> segmentTrackers;
+	TrackerManager trackerManager(NUM_TRACKING_FRAMES, NUM_DEACTIVATION_FRAMES);
 
 	// 매트릭스
 	Mat input;
@@ -137,207 +138,13 @@ int main(int, char**)
 		vector<Segment> segments;
 		extractSegments(segments, combinedBinary, spoid);
 
-		// 트래커 업데이트 //
-		// 트래커 추가
-		while (segmentTrackers.size() < segments.size())
-		{
-			segmentTrackers.push_back(SegmentTracker(NUM_TRACKING_FRAME));
-		}
-
-		// 업데이트 준비
-		for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
-		{
-			auto& tracker = segmentTrackers[c_i];
-			tracker.preupdate();
-		}
-
-		// 업데이트
-		{
-			// 활성화 상태 트래커 업데이트
-			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
-			{
-				auto& tracker = segmentTrackers[c_i];
-
-				// 다음 세그먼트 추적
-				if (!tracker.bUpdated && tracker.bTracking && tracker.bActive)
-				{
-					auto prevSegment = tracker.history.front();
-
-					// 가장 가까운 세그먼트를 추적
-					float minDistance = (float)MAX(vWidth, vHeight);
-					int minIndex = -1;
-					for (size_t c_j = 0; c_j < segments.size(); c_j++)
-					{
-						auto& segment = segments[c_j];
-						if (!segment.bTracked && isPointInRect(prevSegment.rect, getRectMid(segment.rect), 0.3f*(float)sqrt(prevSegment.rect.area())))
-						{
-							float distance = (float)norm(segment.mid - prevSegment.mid);
-							if (minDistance > distance)
-							{
-								minDistance = distance;
-								minIndex = (int)c_j;
-							}
-						}
-					}
-
-					if (minIndex >= 0)
-					{
-						auto& nearestSegment = segments[minIndex];
-			
-						// 일정 거리 이내일 경우 비활성화 상태로 변경
-						float threshold = 0.1f*(float)sqrt(prevSegment.rect.area());
-						if (minDistance <= threshold)
-						{
-							if (++tracker.deactivateCounter > DEACTIVATION_FRAME)
-							{
-								tracker.bActive = false;
-								tracker.history.clear();
-								tracker.deactivateCounter = 0;
-							}
-						}
-						else
-						{
-							tracker.deactivateCounter = 0;
-							nearestSegment.bActive = true;
-						}
-
-						// 히스토리엔 위치를 보간 후 보관
-						auto copy = nearestSegment;
-						copy.mid = 0.6f*copy.mid + 0.4f*prevSegment.mid;
-
-						tracker.addToHistory(copy);
-						tracker.bUpdated = true;
-						nearestSegment.bTracked = true;
-					}
-				}
-
-			}
-
-			// 비활성화 상태 트래커 업데이트
-			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
-			{
-				auto& tracker = segmentTrackers[c_i];
-				
-				// 다음 세그먼트 추적
-				if (tracker.bTracking && !tracker.bActive)
-				{
-					auto prevSegment = tracker.history.front();
-
-					// 가장 가까운 세그먼트를 추적
-					float minDistance = (float)MAX(vWidth, vHeight);
-					int minIndex = -1;
-					for (size_t c_j = 0; c_j < segments.size(); c_j++)
-					{
-						auto& segment = segments[c_j];
-						if (!segment.bTracked && isPointInRect(prevSegment.rect, getRectMid(segment.rect), 0.3f*(float)sqrt(prevSegment.rect.area())))
-						{
-							float distance = (float)norm(segment.mid - tracker.getNLatestSegmentMid(10));
-							if (minDistance > distance)
-							{
-								minDistance = distance;
-								minIndex = (int)c_j;
-							}
-						}
-					}
-
-					if (minIndex >= 0)
-					{
-						auto& nearestSegment = segments[minIndex];
-
-						// 일정 거리 이내일 경우 계속 비활성화 상태로 간주
-						float threshold = 0.3f*(float)sqrt(prevSegment.rect.area());
-						if (minDistance <= threshold)
-						{
-							//tracker.history.clear();
-						}
-
-						// 일정 거리를 벗어나면 활성화 상태로 변경
-						else
-						{
-							tracker.history.clear();
-							tracker.bActive = true;
-							nearestSegment.bActive = true;
-						}
-
-						// 히스토리엔 위치를 보간 후 보관
-						auto copy = nearestSegment;
-						copy.mid = 0.6f*copy.mid + 0.4f*prevSegment.mid;
-
-						tracker.addToHistory(nearestSegment);
-						tracker.bUpdated = true;
-						nearestSegment.bTracked = true;
-					}
-				}
-			}
-
-			// 트래커에 세그먼트 할당
-			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
-			{
-				auto& tracker = segmentTrackers[c_i];
-	
-				if(!tracker.bUpdated && !tracker.bTracking)
-				{
-					for (size_t c_j = 0; c_j < segments.size(); c_j++)
-					{
-						auto& segment = segments[c_j];
-						if (!segment.bTracked)
-						{
-							tracker.addToHistory(segment);
-							tracker.bTracking = true;
-							tracker.bUpdated = true;
-							segment.bTracked = true;
-							break;
-						}
-					}
-				}
-			}
-
-			// 잉여 트래커 삭제
-			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
-			{
-				auto& tracker = segmentTrackers[c_i];
-
-				if (!tracker.bUpdated)
-				{
-					cout << "tracker: " << c_i <<  " not updated" << endl;
-
-					segmentTrackers.erase(segmentTrackers.begin() + c_i);
-					c_i--;
-				}
-			}
-		}
+		// 트래커 업데이트
+		trackerManager.update(segments);
 
 		// 시각화
-		{
-			for (size_t c_i = 0; c_i < segmentTrackers.size(); c_i++)
-			{
-				auto& segmentTracker = segmentTrackers[c_i];
-				if (segmentTracker.bTracking)
-				{
-					Rect& segmentArea = segmentTracker.history.front().rect;
-					if (segmentTracker.bActive)
-					{
-						rectangle(result, segmentArea, Scalar(50, 255, 50), 5);
+		trackerManager.visualize(result);
 
-						for (size_t c_i = segmentTracker.history.size() - 1; c_i > 0; c_i--)
-						{
-							auto& segment = segmentTracker.history[c_i];
-							auto& nextSegment = segmentTracker.history[c_i - 1];
-
-							Point mid = segment.mid;
-							Point nextMid = nextSegment.mid;
-
-							line(result, mid, nextMid, Scalar(255, 0, 255), 5);
-						}
-					}
-					else
-					{
-						rectangle(result, segmentArea, Scalar(255, 0, 0), 2);
-					}
-				}
-			}
-		}
-
+		// 매트릭스 출력
 		imshow("result", result);
 		//imshow("hsv", hsvBinary);
 		//imshow("yCrCv", yCrCvBinary);
